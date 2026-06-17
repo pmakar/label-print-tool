@@ -36,14 +36,17 @@ type AreaPrintItem = {
 
 type PrintMode = "labels" | "areas";
 
-type SavedLabelToolState = {
+type SavedJob = {
+  id: string;
+  label: string;
+  savedAt: string;
   jobNumber: string;
   jobName: string;
-  areas: AreaRow[];
   fontScale: number;
+  areas: AreaRow[];
 };
 
-const STORAGE_KEY = "label-print-tool-state";
+const STORAGE_KEY = "label-print-tool-saved-jobs";
 
 const makeId = () => Math.random().toString(36).slice(2, 9);
 
@@ -127,6 +130,12 @@ function formatContentLines(content: string): string {
   return lines.filter(Boolean).join("\n");
 }
 
+function makeSavedJobLabel(jobNumber: string, jobName: string) {
+  const cleanJobNumber = sanitize(jobNumber) || "NO JOB NUMBER";
+  const cleanJobName = sanitize(jobName) || "NO JOB NAME";
+  return `${cleanJobNumber} - ${cleanJobName}`;
+}
+
 export default function LabelPrintTool() {
   const [fontScale, setFontScale] = useState(1);
   const [printMode, setPrintMode] = useState<PrintMode>("labels");
@@ -135,22 +144,69 @@ export default function LabelPrintTool() {
   const [areas, setAreas] = useState<AreaRow[]>([
     { id: makeId(), area: "MAIN", count: 0, color: presetColors[0], contents: "" },
   ]);
+  const [savedJobs, setSavedJobs] = useState<SavedJob[]>([]);
+  const [selectedSavedJobId, setSelectedSavedJobId] = useState("");
 
   useEffect(() => {
-    const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (!saved) return;
-
     try {
-      const parsed = JSON.parse(saved) as SavedLabelToolState;
+      const raw = window.localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
 
-      if (typeof parsed.jobNumber === "string") setJobNumber(parsed.jobNumber);
-      if (typeof parsed.jobName === "string") setJobName(parsed.jobName);
-      if (Array.isArray(parsed.areas) && parsed.areas.length > 0) setAreas(parsed.areas);
-      if (typeof parsed.fontScale === "number") setFontScale(parsed.fontScale);
+      const parsed = JSON.parse(raw) as SavedJob[];
+      if (!Array.isArray(parsed)) return;
+
+      setSavedJobs(parsed);
+      if (parsed[0]) {
+        setSelectedSavedJobId(parsed[0].id);
+      }
     } catch {
-      // Ignore broken local save data.
+      // Ignore broken localStorage data.
     }
   }, []);
+
+  const persistSavedJobs = (nextJobs: SavedJob[]) => {
+    setSavedJobs(nextJobs);
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextJobs));
+  };
+
+  const saveCurrentJob = () => {
+    const label = makeSavedJobLabel(jobNumber, jobName);
+    const savedJob: SavedJob = {
+      id: label,
+      label,
+      savedAt: new Date().toISOString(),
+      jobNumber,
+      jobName,
+      fontScale,
+      areas,
+    };
+
+    const withoutExisting = savedJobs.filter((job) => job.id !== savedJob.id);
+    const nextJobs = [savedJob, ...withoutExisting];
+    persistSavedJobs(nextJobs);
+    setSelectedSavedJobId(savedJob.id);
+  };
+
+  const loadSavedJob = (jobId: string) => {
+    const job = savedJobs.find((item) => item.id === jobId);
+    if (!job) return;
+
+    setJobNumber(job.jobNumber);
+    setJobName(job.jobName);
+    setFontScale(job.fontScale);
+    setAreas(
+      job.areas && job.areas.length > 0
+        ? job.areas
+        : [{ id: makeId(), area: "MAIN", count: 0, color: presetColors[0], contents: "" }]
+    );
+    setSelectedSavedJobId(jobId);
+  };
+
+  const deleteSavedJob = (jobId: string) => {
+    const nextJobs = savedJobs.filter((job) => job.id !== jobId);
+    persistSavedJobs(nextJobs);
+    setSelectedSavedJobId(nextJobs[0]?.id || "");
+  };
 
   const labels = useMemo<LabelItem[]>(() => {
     const out: LabelItem[] = [];
@@ -230,24 +286,14 @@ export default function LabelPrintTool() {
     setAreas((current) => (current.length > 1 ? current.filter((row) => row.id !== id) : current));
   };
 
-  const saveState = () => {
-    const data: SavedLabelToolState = {
-      jobNumber,
-      jobName,
-      areas,
-      fontScale,
-    };
-
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  };
-
   const printWithMode = (mode: PrintMode) => {
     if (mode === "labels") {
-      saveState();
+      saveCurrentJob();
     }
 
     setPrintMode(mode);
     document.body.setAttribute("data-print-mode", mode);
+
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         window.print();
@@ -271,17 +317,17 @@ export default function LabelPrintTool() {
           --label-gap: 5mm;
         }
 
-        .print-wrap {
-          padding: 0;
-          margin: 0;
-        }
-
         .print-only-labels {
           display: block;
         }
 
         .print-only-areas {
           display: none;
+        }
+
+        .print-wrap {
+          padding: 0;
+          margin: 0;
         }
 
         .labels-grid {
@@ -335,6 +381,26 @@ export default function LabelPrintTool() {
         }
 
         @media print {
+          .print-only-areas {
+            display: none !important;
+          }
+
+          body[data-print-mode='areas'] .print-only-labels {
+            display: none !important;
+          }
+
+          body[data-print-mode='areas'] .print-only-areas {
+            display: grid !important;
+          }
+
+          body[data-print-mode='labels'] .print-only-labels {
+            display: block !important;
+          }
+
+          body[data-print-mode='labels'] .print-only-areas {
+            display: none !important;
+          }
+
           html, body {
             margin: 0 !important;
             padding: 0 !important;
@@ -366,22 +432,6 @@ export default function LabelPrintTool() {
             padding: 0 !important;
             margin: 0 !important;
             width: 185mm !important;
-          }
-
-          body[data-print-mode='areas'] .print-only-labels {
-            display: none !important;
-          }
-
-          body[data-print-mode='areas'] .print-only-areas {
-            display: grid !important;
-          }
-
-          body[data-print-mode='labels'] .print-only-labels {
-            display: block !important;
-          }
-
-          body[data-print-mode='labels'] .print-only-areas {
-            display: none !important;
           }
 
           .labels-grid {
@@ -437,6 +487,37 @@ export default function LabelPrintTool() {
           <CardContent className="space-y-6">
             <Input placeholder="Job number" value={jobNumber} onChange={(e) => setJobNumber(e.target.value)} />
             <Input placeholder="Job name" value={jobName} onChange={(e) => setJobName(e.target.value)} />
+
+            <div className="space-y-2 border-2 border-slate-300 p-3">
+              <div className="text-xs font-semibold">Saved jobs</div>
+
+              <div className="flex gap-2">
+                <select
+                  value={selectedSavedJobId}
+                  onChange={(e) => setSelectedSavedJobId(e.target.value)}
+                  className="min-w-0 flex-1 border p-2 text-sm"
+                >
+                  <option value="">Select saved job</option>
+                  {savedJobs.map((job) => (
+                    <option key={job.id} value={job.id}>
+                      {job.label}
+                    </option>
+                  ))}
+                </select>
+
+                <Button type="button" variant="outline" onClick={() => loadSavedJob(selectedSavedJobId)} disabled={!selectedSavedJobId}>
+                  Load
+                </Button>
+
+                <Button type="button" variant="outline" onClick={() => deleteSavedJob(selectedSavedJobId)} disabled={!selectedSavedJobId}>
+                  Delete
+                </Button>
+              </div>
+
+              <div className="text-xs text-slate-500">
+                Pressing Print labels saves the current job as: {makeSavedJobLabel(jobNumber, jobName)}
+              </div>
+            </div>
 
             <Separator />
 
